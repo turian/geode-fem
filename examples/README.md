@@ -197,7 +197,7 @@ unsafe_code = "forbid"
 **Backend features**: example crates define **no** backend features of
 their own. The Burn backend (`wgpu` by default, `ndarray` on headless CI)
 is selected by `geode-core`'s default features and the workspace
-`--features` flags at build time — exactly like `geode-cli` and
+`--features` flags at build time — exactly like `geode-app` and
 `geode-validation`. Do **not** add `default-features = false` /
 `wgpu` / `ndarray` to the `geode-core` dependency line.
 

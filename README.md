@@ -182,8 +182,7 @@ Requires Rust stable (1.96+, set in `rust-toolchain.toml`).
 
 ```sh
 cargo build              # builds workspace with default `wgpu` backend
-cargo test               # runs the GPU smoke test
-cargo run --bin geode    # prints backend / device / smoke result
+cargo test               # runs the test suite (includes backend smoke tests)
 ```
 
 ### Backend selection
@@ -213,7 +212,7 @@ runtime** on macOS (wgpu selects the Metal graphics API there). The opt-in
 = `Wgpu<f32, i32, u8>`), rather than going through wgpu's runtime adapter
 selection. It is Apple-only and not exercised on CI (all runners are headless
 Linux, which use the `ndarray` CPU backend); verify it locally on Apple hardware
-with `cargo run --bin geode --no-default-features --features metal`.
+with `cargo test -p geode-core --no-default-features --features metal`.
 
 ## System dependencies
 
@@ -281,7 +280,8 @@ crates/
   geode-util/        # pre-core staging layer above geode-core: shared
                      # math / convert / interop / fixture / viz helpers
                      # (Epic #414)
-  geode-cli/         # `geode` binary — prints device info and runs the smoke op
+  geode-app/         # shared application spine (logging / verbosity seam)
+                     # for the GEODE-FEM example binaries
   geode-validation/  # cross-backend reference tests (NumPy / JAX / Julia /
                      # ONNX / TF-Java) and analytic-oracle gates
 ```
