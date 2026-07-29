@@ -12,7 +12,7 @@ blocks: findings are warning severity at most, and the judgment call
 stays with the dim 9 critics.
 
 The rule-set SHAPE reimplements draftwell's ``packages/styleguide/``
-named-rule-set model in pure stdlib Python (no TypeScript port). Three
+named-rule-set model in pure stdlib Python (no TypeScript port). Four
 rule kinds:
 
 - ``phrase`` — a case-insensitive, word-boundary literal. Straight
@@ -20,11 +20,32 @@ rule kinds:
   (``'`` matches ``’``).
 - ``regex`` — compiled as written, with ``re.IGNORECASE`` applied
   (the lint is a vocabulary check; casing never changes the verdict).
-- ``frequency`` — a literal token counted per 1000 words of scanned
-  text against ``max_per_1000_words`` (e.g. the em-dash density rule:
-  more than 8 ``—`` per 1000 words is the documented AI-tell). A
-  ``min_words`` floor (default :data:`DEFAULT_FREQUENCY_MIN_WORDS`)
-  keeps density estimates from firing on statistically tiny texts.
+- ``frequency`` — a ``re.IGNORECASE`` pattern whose match count is
+  measured per 1000 words of scanned text against
+  ``max_per_1000_words``. A single-literal pattern behaves like a token
+  count (e.g. the em-dash density rule: more than 8 ``—`` per 1000 words
+  is the documented AI-tell); a span pattern counts spans (e.g. the
+  ``emphasis-density`` rule counts ``\\*\\*[^*]+\\*\\*`` bold spans, more
+  than ~20 per 1000 words being the bold-inflation tell). An optional
+  ``label`` supplies a human name for the counted unit in the finding's
+  diagnostic tail. A ``min_words`` floor (default
+  :data:`DEFAULT_FREQUENCY_MIN_WORDS`) keeps density estimates from
+  firing on statistically tiny texts.
+- ``long_sentence`` — a syntactic-complexity sibling of ``frequency``
+  (issue #750): naive sentence tokenization (split the scanned text on
+  ``[.!?]`` followed by whitespace — the same fidelity the lint already
+  accepts for word counts, so abbreviation noise like "Dr. Smith" is
+  tolerated rather than specially handled) counts sentences whose word
+  count exceeds ``sentence_word_threshold`` (default
+  :data:`DEFAULT_LONG_SENTENCE_WORD_THRESHOLD`, 40 words), then measures
+  that count per 1000 words against ``max_per_1000_words`` exactly like
+  ``frequency``. This exists because de-hedging/de-bolding a revision
+  can push qualifications out of markup (bold, parentheticals) and into
+  syntax (absorbed clauses) — a pathology no markup-density rule can
+  see. Deliberately **not** a mean-sentence-length cap: mean length is
+  style, the pathology is the tail of multi-clause sentences a reader
+  must re-parse, and the tail is what this rule measures. Shares
+  ``min_words`` (the frequency floor) with the ``frequency`` kind.
 
 JSON rule-set schema (consumer files)
 -------------------------------------
@@ -43,7 +64,10 @@ self-documenting for consumer files)::
         {"id": "no-opening-emdash", "kind": "regex", "scope": "first-line",
          "pattern": "[—–]", "message": "..."},
         {"id": "em-dash-density", "kind": "frequency", "pattern": "—",
-         "max_per_1000_words": 8, "message": "..."}
+         "max_per_1000_words": 8, "message": "..."},
+        {"id": "long-sentence-density", "kind": "long_sentence",
+         "sentence_word_threshold": 40, "max_per_1000_words": 4,
+         "message": "..."}
       ],
       "disable": ["<default-rule-id>", "..."]
     }
@@ -132,7 +156,13 @@ from typing import Optional, Sequence, Union
 RULE_KIND_PHRASE = "phrase"
 RULE_KIND_REGEX = "regex"
 RULE_KIND_FREQUENCY = "frequency"
-_VALID_KINDS = (RULE_KIND_PHRASE, RULE_KIND_REGEX, RULE_KIND_FREQUENCY)
+RULE_KIND_LONG_SENTENCE = "long_sentence"
+_VALID_KINDS = (
+    RULE_KIND_PHRASE,
+    RULE_KIND_REGEX,
+    RULE_KIND_FREQUENCY,
+    RULE_KIND_LONG_SENTENCE,
+)
 
 # Severities. The dimension is advisory by contract: ``warning`` is the
 # ceiling. Anything else (notably ``"error"``) is coerced to ``warning``.
@@ -155,6 +185,29 @@ DEFAULT_FREQUENCY_MIN_WORDS = 50
 # VOCABULARY.md): sustained density above 8 per 1000 words is the
 # documented AI-tell in business/technical prose.
 EMDASH_MAX_PER_1000_WORDS = 8
+
+# Bold-emphasis density ceiling for the default ``emphasis-density``
+# frequency rule (issue #745). Studio calibration: across 105 memo
+# bodies the median bold density runs ~10-12 spans/1000 words on healthy
+# memos; the revise loop was observed monotonically densifying one thread
+# to 35+ spans/1000 (25.5% of words bolded) with no existing lint able to
+# see it. 20 gives comfortable headroom above the healthy median while
+# flagging the pathological 35+ range where emphasis inverts (the reader
+# learns to ignore bold entirely).
+EMPHASIS_MAX_PER_1000_WORDS = 20
+
+# Long-sentence-density defaults (issue #750). The studio canary (praetor
+# memo.4 -> memo.5) demonstrated that de-hedging/de-bolding a revision can
+# push qualifications out of markup and into syntax: deleting a
+# parenthetical caveat and absorbing its content into the host sentence
+# produces better prose AND a longer sentence, so every markup-density
+# rule improves while sentence complexity quietly worsens. 40 words is the
+# documented "forces a re-parse" bar; memo.5 (a genuinely improved rewrite)
+# ran ~4.5 such sentences per 1000 words, a readable memo runs 1-3, so 4
+# gives headroom above the healthy range while catching the pathological
+# tail. Deliberately not a mean-length cap — see the module docstring.
+DEFAULT_LONG_SENTENCE_WORD_THRESHOLD = 40
+LONG_SENTENCE_MAX_PER_1000_WORDS = 4
 
 # Suppression-directive rule tokens honored by default. The memo gate's
 # dimension name is the documented consumer-facing token
@@ -351,6 +404,61 @@ DEFAULT_RHETORIC_RULES: tuple[dict, ...] = (
         "max_per_1000_words": EMDASH_MAX_PER_1000_WORDS,
         "message": "Em-dash density exceeds the AI-tell threshold; vary punctuation (commas, colons, parentheses, periods).",
     },
+    {
+        "id": "emphasis-density",
+        "kind": RULE_KIND_FREQUENCY,
+        # A bold span: ``**...**`` with at least one non-asterisk char
+        # inside. Frequency patterns are compiled as regex (case fold is
+        # irrelevant here), so this counts bold *spans*, not raw ``**``
+        # runs — one span == one finding-worthy unit of emphasis.
+        "pattern": r"\*\*[^*]+\*\*",
+        "label": "bold span",
+        "max_per_1000_words": EMPHASIS_MAX_PER_1000_WORDS,
+        "message": "Bold emphasis above ~20 spans/1000 words stops functioning as emphasis; reserve bold for decision-critical claims (gates, kill lines, the recommendation).",
+    },
+    {
+        "id": "no-meta-commentary",
+        "kind": RULE_KIND_REGEX,
+        # Reviewer-addressed meta-commentary: prose *about* the document
+        # (self-reference + a describing verb) plus the fixed
+        # rubric-compliance-performance phrases the studio canary
+        # surfaced ("argued here", "not re-argued here", "out of scope
+        # here", "stated plainly"). The self-reference arm deliberately
+        # covers both "this memo" and "the memo/document" against a broad
+        # verb set — the memo.8 escape (issue #745) was a narrower grep
+        # that missed "this memo proposes".
+        "pattern": (
+            r"\b(?:this|the) (?:memo|document) "
+            r"(?:does not|do not|is|are|argues?|proposes?|claims?|"
+            r"pretends?|assumes?|shows?|demonstrates?|contends?)\b"
+            r"|\b(?:argued|stated|confronted) here\b"
+            r"|\bre-argued here\b"
+            r"|\bout of scope here\b"
+            r"|\bstated plainly\b"
+        ),
+        "message": "Prose about the document is addressed to the reviewer, not the reader; delete the frame and keep the content.",
+    },
+    {
+        "id": "no-warning-emoji",
+        "kind": RULE_KIND_REGEX,
+        # Warning / alarm emoji in body prose. The variation selector
+        # (U+FE0F) rides with U+26A0 in the class; matching it alone is
+        # harmless (it never appears un-anchored in real prose).
+        "pattern": r"[⚠️🚨❗]",
+        "message": "Emoji alarm markers are emphasis inflation; if it's a kill condition, say so in words.",
+    },
+    {
+        "id": "long-sentence-density",
+        "kind": RULE_KIND_LONG_SENTENCE,
+        "sentence_word_threshold": DEFAULT_LONG_SENTENCE_WORD_THRESHOLD,
+        "max_per_1000_words": LONG_SENTENCE_MAX_PER_1000_WORDS,
+        "message": (
+            "Long-sentence density exceeds the readability ceiling; "
+            "multi-clause sentences over ~40 words force a re-parse — "
+            "split them or cut a clause instead of absorbing it into the "
+            "sentence."
+        ),
+    },
 )
 
 
@@ -442,6 +550,13 @@ _FRONT_MATTER_FENCE_RE = re.compile(r"^---\s*$")
 # when locating the first prose line — a heading is not prose.
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 
+# Naive sentence boundary for the ``long_sentence`` kind (issue #750): a
+# sentence terminator immediately followed by whitespace. Deliberately the
+# same fidelity the module already accepts for word counts — abbreviation
+# noise ("Dr. Smith", "e.g. foo") produces occasional over-splits, which is
+# tolerated rather than specially handled (see the module docstring).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
 
 def _scannable_lines(text: str) -> list[str]:
     """Per-line scan text with exclusions blanked.
@@ -495,6 +610,27 @@ def _scannable_lines(text: str) -> list[str]:
         line = _INLINE_CODE_RE.sub(" ", line)
         out.append(line)
     return out
+
+
+def _sentence_word_counts(scan_lines: list[str]) -> list[int]:
+    """Word count per naive sentence, computed once per document.
+
+    Joins the (already-excluded) scan lines into a single blob — so a
+    sentence wrapped across two source lines is not miscounted as two
+    short sentences — and splits on :data:`_SENTENCE_SPLIT_RE`. Each
+    resulting chunk (including a final chunk with no trailing
+    terminator) is one naive "sentence"; its word count is measured with
+    the same :data:`_WORD_RE` tokenizer used for the document's overall
+    word count, so the two counts are directly comparable.
+    """
+    blob = " ".join(line for line in scan_lines if line.strip())
+    if not blob.strip():
+        return []
+    return [
+        len(_WORD_RE.findall(chunk))
+        for chunk in _SENTENCE_SPLIT_RE.split(blob.strip())
+        if chunk.strip()
+    ]
 
 
 def _first_prose_lineno(
@@ -612,19 +748,61 @@ def _validate_rule(rule: object) -> tuple[Optional[dict], Optional[str]]:
             f"rule {rule_id!r}: invalid kind {kind!r} "
             f"(expected one of {', '.join(_VALID_KINDS)})",
         )
-    pattern = rule.get("pattern")
-    if not isinstance(pattern, str) or not pattern:
-        return (None, f"rule {rule_id!r}: missing string 'pattern'")
+    # ``long_sentence`` rules have no regex pattern — they count sentences
+    # by word length, not matches — so ``pattern`` is required for every
+    # other kind only.
+    pattern: Optional[str] = None
+    if kind != RULE_KIND_LONG_SENTENCE:
+        pattern = rule.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            return (None, f"rule {rule_id!r}: missing string 'pattern'")
     normalized: dict = {
         "id": rule_id.strip(),
         "kind": kind,
-        "pattern": pattern,
         "message": rule.get("message")
         if isinstance(rule.get("message"), str)
         else f"rule {rule_id!r} matched",
         "severity": _coerce_severity(rule.get("severity")),
     }
-    if kind == RULE_KIND_FREQUENCY:
+    if pattern is not None:
+        normalized["pattern"] = pattern
+    if kind == RULE_KIND_LONG_SENTENCE:
+        threshold = rule.get("max_per_1000_words")
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or threshold <= 0
+        ):
+            return (
+                None,
+                f"rule {rule_id!r}: long_sentence kind requires numeric "
+                f"'max_per_1000_words' > 0 (got {threshold!r})",
+            )
+        normalized["max_per_1000_words"] = float(threshold)
+        min_words = rule.get("min_words", DEFAULT_FREQUENCY_MIN_WORDS)
+        if (
+            isinstance(min_words, bool)
+            or not isinstance(min_words, (int, float))
+            or min_words < 0
+        ):
+            min_words = DEFAULT_FREQUENCY_MIN_WORDS
+        normalized["min_words"] = int(min_words)
+        sentence_word_threshold = rule.get(
+            "sentence_word_threshold", DEFAULT_LONG_SENTENCE_WORD_THRESHOLD
+        )
+        if (
+            isinstance(sentence_word_threshold, bool)
+            or not isinstance(sentence_word_threshold, (int, float))
+            or sentence_word_threshold <= 0
+        ):
+            return (
+                None,
+                f"rule {rule_id!r}: long_sentence kind requires numeric "
+                f"'sentence_word_threshold' > 0 "
+                f"(got {sentence_word_threshold!r})",
+            )
+        normalized["sentence_word_threshold"] = int(sentence_word_threshold)
+    elif kind == RULE_KIND_FREQUENCY:
         threshold = rule.get("max_per_1000_words")
         if (
             isinstance(threshold, bool)
@@ -645,6 +823,22 @@ def _validate_rule(rule: object) -> tuple[Optional[dict], Optional[str]]:
         ):
             min_words = DEFAULT_FREQUENCY_MIN_WORDS
         normalized["min_words"] = int(min_words)
+        # Frequency patterns are counted as regex matches (``findall``),
+        # so a rule can count spans like ``\*\*[^*]+\*\*`` (bold), not
+        # only single literal tokens. A single-char literal such as the
+        # em-dash ``—`` counts identically under either model. Compile
+        # now so a malformed pattern is a config finding, not a
+        # mid-scan crash.
+        try:
+            normalized["_compiled"] = _compile_rule_pattern(kind, pattern)
+        except re.error as exc:
+            return (None, f"rule {rule_id!r}: invalid regex pattern: {exc}")
+        # Optional human label used only in the frequency finding's
+        # diagnostic tail (so an opaque regex like the bold-span pattern
+        # reads as "bold span" instead of the raw source).
+        label = rule.get("label")
+        if isinstance(label, str) and label.strip():
+            normalized["label"] = label.strip()
     else:
         # Positional scope (phrase/regex only; frequency is always
         # document-level and never receives a ``scope`` key). Unknown or
@@ -863,12 +1057,19 @@ def lint_rhetoric(
     words = sum(len(_WORD_RE.findall(line)) for line in scan_lines)
     # Computed once for all positional (``scope: "first-line"``) rules.
     first_prose_lineno = _first_prose_lineno(scan_lines, text)
+    # Computed lazily (only if a ``long_sentence`` rule is active) and
+    # cached across rules — the tokenization does not depend on any
+    # per-rule setting, only ``sentence_word_threshold`` does.
+    sentence_word_counts: Optional[list[int]] = None
 
     for rule in rules:
-        if rule["kind"] == RULE_KIND_FREQUENCY:
-            count = sum(line.count(rule["pattern"]) for line in scan_lines)
+        if rule["kind"] == RULE_KIND_LONG_SENTENCE:
             if words < rule["min_words"] or words == 0:
                 continue
+            if sentence_word_counts is None:
+                sentence_word_counts = _sentence_word_counts(scan_lines)
+            threshold = rule["sentence_word_threshold"]
+            count = sum(1 for wc in sentence_word_counts if wc > threshold)
             density = count / words * 1000.0
             if density > rule["max_per_1000_words"]:
                 findings.append(
@@ -877,7 +1078,30 @@ def lint_rhetoric(
                         severity=rule["severity"],
                         message=(
                             f"{rule['message']} "
-                            f"({count} occurrence(s) of {rule['pattern']!r} "
+                            f"({count} sentence(s) over {threshold} words "
+                            f"in {words} words = {density:.1f}/1000; "
+                            f"threshold {rule['max_per_1000_words']:g}/1000)."
+                        ),
+                        line=None,
+                        match=None,
+                    )
+                )
+            continue
+        if rule["kind"] == RULE_KIND_FREQUENCY:
+            freq_regex = rule["_compiled"]
+            count = sum(len(freq_regex.findall(line)) for line in scan_lines)
+            if words < rule["min_words"] or words == 0:
+                continue
+            density = count / words * 1000.0
+            if density > rule["max_per_1000_words"]:
+                label = rule.get("label") or rule["pattern"]
+                findings.append(
+                    RhetoricFinding(
+                        rule_id=rule["id"],
+                        severity=rule["severity"],
+                        message=(
+                            f"{rule['message']} "
+                            f"({count} occurrence(s) of {label!r} "
                             f"in {words} words = {density:.1f}/1000; "
                             f"threshold {rule['max_per_1000_words']:g}/1000)."
                         ),
@@ -925,10 +1149,14 @@ def lint_rhetoric(
 __all__ = [
     "CONFIG_RULE_ID",
     "DEFAULT_FREQUENCY_MIN_WORDS",
+    "DEFAULT_LONG_SENTENCE_WORD_THRESHOLD",
     "DEFAULT_RHETORIC_RULES",
     "DEFAULT_SUPPRESS_RULES",
     "EMDASH_MAX_PER_1000_WORDS",
+    "EMPHASIS_MAX_PER_1000_WORDS",
+    "LONG_SENTENCE_MAX_PER_1000_WORDS",
     "RULE_KIND_FREQUENCY",
+    "RULE_KIND_LONG_SENTENCE",
     "RULE_KIND_PHRASE",
     "RULE_KIND_REGEX",
     "RhetoricFinding",

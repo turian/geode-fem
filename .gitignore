@@ -109,3 +109,5 @@ dist/
 
 # Anvil paper-vision per-page render intermediates (regenerable at 200 DPI from main.pdf)
 papers/**/*.vision/pages/
+**/*.vision/pages/
+**/*.vision/slides/
