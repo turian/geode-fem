@@ -7,33 +7,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
+This release repositions GEODE-FEM as a differentiable-by-construction
+complement to Palace: the full 2×2 sensitivity matrix (material + geometry ×
+scalar + H(curl) EM) is FD-validated and mutation-tested, and it is exercised
+end-to-end by a driven-Maxwell shape-adjoint chain that culminates in
+many-DOF freeform inverse design of a curved conformal radiator. Alongside
+the adjoint work, a matrix-free eigensolve path with a full Hiptmair–Xu AMS
+preconditioner opens the road past the direct-LU memory wall, and a suite of
+validated benchmarks lands: slotless-PM Arkkio torque T(θ) at 0.71 %, SMF-28
+LP01 modal b at 0.88 %, and transmon capacitance/EPR extraction. The
+workspace itself goes standalone (vendored Palace docker, external refs
+scrubbed) and gains the `geode-app` harness, standalone example crates, and
+the `geode-util` pre-core staging crate.
+
 ### Added
+
+#### Differentiable sensitivities — the full 2×2 matrix (Epic #569)
+
+- Discrete-adjoint material sensitivity ∂(observable)/∂ε on the scalar path
+  (#570, #573) and geometry/shape gradient ∂(observable)/∂X (#571, #575),
+  both FD-validated.
+- H(curl) driven-EM material adjoint ∂/∂ε (#579) and geometry/shape adjoint
+  ∂(EM observable)/∂(node coords) (#581), completing the matrix; complex-ε
+  (loss-tangent) sensitivities on the driven adjoint (#598).
+- Hellmann–Feynman eigenvalue sensitivities ∂λ/∂p (#600) and
+  inductance-matrix reluctivity sensitivity ∂L/∂ν via the self-adjoint
+  energy form (#615).
+
+#### Driven shape-adjoint chain → freeform inverse design
+
+- |S11|² shape-adjoint objective closure and the first driven-Maxwell
+  optimization loop (#627); complex-ε lossy shape adjoint (#630);
+  pinned-feed (#632) and moving-feed (#644) lumped-port terminations in the
+  shape adjoint; box-UPML tensor-material adjoint at fixed Λ (#643).
+- Composed open-radiator shape adjoint + full inverse-design capstone
+  (#645); high-DOF freeform boundary parametrization with mesh-morph
+  regularizer (#654); curved conformal radiator fixture (#653) and many-DOF
+  freeform inverse design on it (#655).
+- FDTD-density head-to-head baseline plus measured Meep runtime-scaling
+  evidence for the intractability axis (#656, #657).
+
+#### Matrix-free scale path and AMS preconditioning (Epic #547)
+
+- Matrix-free Nédélec curl-curl + mass matvecs on Burn (#483), GPU-resident
+  COCG over the matrix-free operator (#487), and
+  `SolverMode::IterativeMatrixFree` on the driven pencil (#495).
+- Matrix-free shift-invert Lanczos to scale past the direct-LU memory wall
+  (#525), AMS-lite H(curl) preconditioner (#528), and a matrix-free MINRES
+  inner solver for interior/indefinite shifts (#537).
+- Full Hiptmair–Xu AMS cycle: three-space AMS as the SPD preconditioner for
+  indefinite MINRES (#560), the vector-nodal ΠᵀAΠ block (#553), an
+  O(node_dim) few-sweep coarse solve (#554) with a smoothed-aggregation AMG
+  alternative (#566), and the `transmon_bench` scale harness (#552).
+- Distributed groundwork: geometric k-way edge-DOF partitioner + halo map
+  (#642) and a distributed matrix-free Krylov abstraction with a
+  single-process mock collective (#646).
+- Opt-in `InnerSolver::DirectCustomOrder` — custom fill-reducing LU ordering
+  via faer's public deeper API (#543, #544).
+
+#### Second-order elements
+
+- 20-DOF second-order Nédélec tet element (#617) with an opt-in p=2 driven
+  forward path + material adjoint (#621), p=2 PEC-cube eigensolve with a
+  frequency-convergence gate (#622), and a p=2 shape adjoint via a dual
+  element twin (#623).
+- P2 Lagrange tets on the scalar magnetostatic path, retiring the 2.44 %
+  B-field miss to 0.211 % at O(h²) (#472, #474), and on the electrostatic
+  path with the adjoint retained (#608).
+
+#### New solver physics
+
+- 3-D electrostatic solver + Maxwell capacitance-matrix extraction (#481)
+  and 3-D vector magnetostatics + inductance-matrix extraction (#512), with
+  a 2-D scalar magnetostatic Poisson solver as the oracle rung (#460).
+- Transient EM solver — generalized-α time integration with broadband
+  S-parameters via DFT (#489); adaptive fast frequency sweep via greedy
+  Galerkin PROM (#610).
+- London superconductor surface BC (per-tag λ_L) on the driven and eigenmode
+  paths, with ∂λ/∂λ_L via Hellmann–Feynman (#609).
+- Divergence-free M-orthogonal projection for the eigen path, port-aware so
+  the junction LC mode survives (#513, #515), plus a tree-cotree gauge
+  module with its spectrum limitation pinned (#508).
+
+#### Validated benchmarks
+
+- Motor torque (Epic #448): PM magnetization sources and air-gap oracle
+  (#463), Maxwell-stress + Arkkio torque extractors vs the loop T = m × B
+  oracle (#464), and the driven slotless-PM locked-rotor T(θ) benchmark at
+  0.71 % (#465), on multi-band annular meshes with ν heterogeneity oracles
+  (#462).
+- Optical fiber (Epic #339): full-vector mixed E_t–E_z Nédélec–Lagrange
+  dielectric modal pencil hitting SMF-28 LP01 b within 0.88 % (≤ 1 % gate),
+  with a regression tripwire for the old reduced-pencil artifact (#473,
+  #477) and an audit of the ε-coupling term that pencil dropped (#461);
+  analytic-cladding DtN fiber solver (#447); chromatic dispersion D(λ) + ZDW
+  vs the analytic oracle (#482).
+- Transmon (Epics #475/#476 groundwork): fixture ingestion + shared MSH tag
+  scanners (#488, #494), Josephson junction as a lumped reactive shunt in
+  the eigensolve (#496), EPR quantization + qubit parameters (#511), a
+  differentiable capacitance→E_C chain (#586) driving gradient-based
+  transmon-parameter optimization (#588) and island-pad shape optimization
+  on the real 133k-tet mesh (#590), with harmonic mesh-morphing island
+  deformation (#599).
 
 #### New `geode-util` pre-core staging crate (Epic #414)
 
-- Introduced `geode-util`, a pre-core staging layer that sits above
-  `geode-core` and collects shared, reusable helpers previously scattered
-  across `geode-validation` and the standalone example crates. Its module
-  map is `repo` / `convert` / `interop` / `fixture` / `viz`.
-- Migrated the fixture-repository helpers (#417), interop decoders (#418),
-  edge-DOF → nodal field reconstruction (`viz::edge_field_to_nodes`, #419),
-  conversion glue, and the shared fixture TOML/pvd/sweep harness (#423) out
-  of `geode-validation` and the examples and into `geode-util`.
-  `geode-validation` now re-exports/consumes these helpers and retains only
-  genuine validation-harness code.
+- Introduced `geode-util`, a pre-core staging layer above `geode-core` that
+  collects shared helpers previously scattered across `geode-validation` and
+  the example crates (module map `repo` / `convert` / `interop` / `fixture`
+  / `viz`): fixture-repository helpers (#417), interop decoders (#418),
+  edge-DOF → nodal reconstruction (#419), and the shared fixture
+  TOML/pvd/sweep harness (#423). `geode-validation` now consumes these and
+  retains only genuine validation-harness code, with JSON fixture
+  loader/schema and serde glue migrated in Epic #429 (#434, #435, #437).
 
 ### Changed
 
-- Broke the standalone example crates' dependency on `geode-validation`;
-  examples now depend on `geode-util` (and `geode-core` / `geode-app`) for
-  shared utility code.
+- The workspace is fully standalone: Palace docker tooling vendored in-repo
+  and all external repository references scrubbed (#542).
+- Examples restructured into standalone top-level crates (mie, patch
+  antenna, spiral inductor, SLCFET, waveguides, fibers; #402–#412) driven by
+  the new `geode-app` clap harness with arg groups and a lifecycle seam
+  (#400); example crates now depend on `geode-util` instead of
+  `geode-validation`.
+- Bunsen integration closed out (Epic #355): named shape contracts wired
+  across the P1 gather cluster, assembly, and basis/eigensolver paths (#466,
+  #467, #469) and the git pin swapped to crates.io bunsen 0.28.0 (#507).
+- Assembly and factorization hot paths parallelized: rayon on the Nédélec
+  host-side pattern/slot build (#538) and in faer's sparse-LU factorization
+  (#521); M·v_j caching drops O(k²) reorthogonalization SpMVs (#510).
+- Orchestration/authoring tooling (Loom, Anvil, Repo Skills) kept current
+  across the cycle (#540, #597, #625, #662, #667, #670, #671).
+
+### Fixed
+
+- Transmon fixtures resolve mesh groups by name, with the real DeviceLayout
+  fixture swapped in (#494).
+- `geode-validation` rustdoc lints repaired and the `cargo doc -D warnings`
+  gate widened to the whole workspace (#541).
+- Dead macos-13 CI leg removed from cube-cavity-tolerance, ending 24 h hangs
+  (#443).
 
 ### Removed
 
-- Deleted the orphaned `examples/_support` (`geode-examples-support`) crate.
-  After #419 it was a thin re-export of `geode_util::viz::edge_field_to_nodes`
-  with no remaining consumers; its `[workspace.dependencies]` entry has been
-  removed (Epic #414 Phase 3, #426).
+- Deleted the orphaned `examples/_support` (`geode-examples-support`) crate
+  after its last consumer moved to `geode_util::viz` (Epic #414 Phase 3,
+  #426, #427).
+- Deleted the external-reference MoM baseline crates as part of the
+  standalone move (#542).
 
 ## [0.2.0] - 2026-06-25
 
