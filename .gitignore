@@ -118,3 +118,8 @@ dist/
 papers/**/*.vision/pages/
 **/*.vision/pages/
 **/*.vision/slides/
+
+# Vendored Anvil skill install — reinstall with anvil's install.sh.
+# Untracked deliberately: a copy-installed tool tree does not belong in a
+# public repo, and this one carried third-party content (2AMLogic/2am#94).
+.anvil/

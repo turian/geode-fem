@@ -1,3 +1,0 @@
-# BRIEF — execution-plan (fixture placeholder)
-
-Placeholder brief. See the fixture's `README.md`.
